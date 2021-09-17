@@ -52,11 +52,15 @@ function dogleg!(p, p_c, p_i,
     catch e
         if isa(e, LAPACKException) || isa(e, SingularException)
             # If Jacobian is singular, compute a least-squares solution to J*x+r=0
-            U, S, V = svd(convert(Matrix{T}, J)) # Convert to full matrix because sparse SVD not implemented as of Julia 0.3
+            U, S, V = svd(J)
             k = sum(S .> eps())
-            mrinv = V * Matrix(Diagonal([1 ./ S[1:k]; zeros(eltype(S), length(S)-k)])) * U' # Moore-Penrose generalized inverse of J
-            vecpi = vec(p_i)
-            mul!(vecpi,mrinv,vec(r))
+            
+            _z = similar(S, length(S) - k)
+            fill!(_z, zero(eltype(S)))
+
+            mrinv = V * Diagonal(vcat(1 ./ S[1:k], _z)) * U' # Moore-Penrose generalized inverse of J
+
+            mul!(vec(p_i), mrinv, vec(r))
         else
             throw(e)
         end
@@ -146,12 +150,7 @@ function trust_region_(df::OnceDifferentiable,
     @trustregiontrace convert(real(T), NaN)
     nn = length(cache.x)
     if autoscale
-        for j = 1:nn
-            cache.d[j] = norm(view(jacobian(df), :, j))
-            if cache.d[j] == zero(cache.d[j])
-                cache.d[j] = one(cache.d[j])
-            end
-        end
+        cache.d .= map(x -> iszero(x) ? one(x) : sqrt(x), sum(abs2, jacobian(df), dims = 1)')
     else
         fill!(cache.d, one(real(T)))
     end
@@ -185,9 +184,7 @@ function trust_region_(df::OnceDifferentiable,
 
             # Update scaling vector
             if autoscale
-                for j = 1:nn
-                    cache.d[j] = max(convert(real(T), 0.1) * real(cache.d[j]), norm(view(jacobian(df), :, j)))
-                end
+                cache.d .= max.(convert(real(T), 0.1) .* real.(cache.d), sqrt.(sum(abs2, jacobian(df), dims = 1))')
             end
 
             x_converged, f_converged = assess_convergence(cache.x, cache.xold, cache.r, xtol, ftol)
